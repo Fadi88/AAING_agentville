@@ -31,105 +31,58 @@ class Interest(str, Enum):
 
 
 class ChatAgent:
-    """A chat agent that interacts with OpenAI's API to facilitate conversations.
+    """A chat agent that interacts with a generative model API to facilitate conversations.
 
     This class manages chat history, formats system prompts, and handles
-    communication with OpenAI's chat completion API. It provides methods to
+    communication with the generative model's chat completion API. It provides methods to
     add messages, get responses, and maintain conversation context.
-
-    Attributes:
-        system_prompt_template (str): Template for the system prompt using {variable_name} placeholders.
     """
     system_prompt = "You are a helpful assistant."
-    messages = []
 
-    def __init__(self, name=None, system_prompt=None, client=None, model=None):
+    def __init__(self, name=None, system_prompt=None, model=None):
         self.name = name or self.__class__.__name__
         if system_prompt:
             self.system_prompt = system_prompt
-        self.client = client
         self.model = model
         self.reset()
 
     def add_message(self, role, content):
-        """Add a message to the chat history.
-
-        Args:
-            role (str): The role of the message ("system", "user", or "assistant").
-            content (str): The content of the message.
-
-        Raises:
-            ValueError: If the role is not one of "system", "user", or "assistant".
-        """
-        if role not in ["system", "user", "assistant"]:
+        """Add a message to the chat history."""
+        if role not in ["system", "user", "assistant", "model"]:
             raise ValueError(f"Invalid role: {role}")
+
+        # Gemini uses 'model' for assistant role
+        if role == 'assistant':
+            role = 'model'
+
         self.messages.append({"role": role, "content": content})
-        if role == "system":
-            print_in_box(
-                content,
-                f"{self.name} - System Prompt",
-            )
-        elif role == "user":
-            print_in_box(
-                content,
-                f"{self.name} - User Prompt",
-            )
-        elif role == "assistant":
-            print_in_box(
-                content,
-                f"{self.name} - Assistant Response",
-            )
 
     def reset(self):
-        """Reset the chat history and re-initialize with the system prompt.
-
-        This method clears all existing messages and adds the system prompt
-        formatted with the template_kwargs.
-        """
+        """Reset the chat history and re-initialize with the system prompt."""
         from textwrap import dedent
-
         system_prompt = dedent(self.system_prompt).strip()
-
-        # Clear previous messages and add the system prompt
-        self.messages = []
-        self.add_message(
-            "system",
-            system_prompt,
-        )
+        self.messages = [{"role": "user", "content": system_prompt}, {"role": "model", "content": "OK."}]
 
     def get_response(self, add_to_messages=True, model=None, client=None, **kwargs):
-        """Get a response from the OpenAI API.
+        """Get a response from the generative model API."""
+        if client is None:
+            import google.generativeai as genai
+            client = genai.GenerativeModel(model_name=model or self.model)
 
-        Args:
-            add_to_messages (bool, optional): Whether to add the response to the chat history
-            using the add_message method and the assistant role. Defaults to True.
-
-        Returns:
-            str: The response from the OpenAI API.
-
-
-        """
         response = do_chat_completion(
             messages=self.messages,
             model=model or self.model,
-            client=client or self.client,
+            client=client,
             **kwargs
         )
         if add_to_messages:
             self.add_message("assistant", response)
         return response
 
-    def chat(self, user_message, add_to_messages=True, model=None, **kwargs):
-        """Send a message to the chat and get a response.
-
-        Args:
-            user_message (str): The message to send to the chat.
-
-        Returns:
-            str: The response from the OpenAI API.
-        """
+    def chat(self, user_message, add_to_messages=True, model=None, client=None, **kwargs):
+        """Send a message to the chat and get a response."""
         self.add_message("user", user_message)
-        return self.get_response(add_to_messages=add_to_messages, model=model, **kwargs)
+        return self.get_response(add_to_messages=add_to_messages, model=model, client=client, **kwargs)
 
 
 def print_in_box(text, title="", cols=120, tab_level=0):
@@ -183,61 +136,26 @@ def print_in_box(text, title="", cols=120, tab_level=0):
 
 
 def do_chat_completion(messages: list[dict[str, str]], model=None, client=None, **kwargs):
-    """A simple wrapper around OpenAI's chat completion API.
-
-    Args:
-        messages: A list of messages to send to the chat completion API.
-
-    Returns:
-        str: The response from the chat completion API.
-
-    Raises:
-        openai.OpenAIError: If the chat completion API returns an error.
-
-    Examples:
-        >>> messages = [
-        ...     {"role": "user", "content": "Hello, how are you?"},
-        ...     {"role": "assistant", "content": "I'm good, thanks!"},
-        ... ]
-        >>> from unittest.mock import patch
-        >>> with patch('openai.OpenAI') as mock_openai:
-        ...     # Setup mock response
-        ...     mock_client = mock_openai.return_value
-        ...     mock_chat = mock_client.chat
-        ...     mock_completions = mock_chat.completions
-        ...     mock_create = mock_completions.create
-        ...     mock_response = mock_create.return_value
-        ...     mock_response.choices = [type('obj', (object,), {'message': type('msg', (object,), {'content': "I'm good, thanks!"})()})]
-        ...     response = do_chat_completion(messages)
-        >>> response
-        "I'm good, thanks!"
-    """
+    """A simple wrapper around Gemini's chat completion API."""
     if client is None:
-        raise ValueError("A valid OpenAI client must be provided.")
+        raise ValueError("A valid Gemini client must be provided.")
     
     if model is None:
         raise ValueError("A valid model must be provided.")
 
-    if "response_format" not in kwargs:
-        response = client.chat.completions.create(  # type: ignore
-            model=model,
-            messages=messages,  # type: ignore
-            **kwargs,  # type: ignore
-        )
-    else:
-        response = client.beta.chat.completions.parse(  # type: ignore
-            model=model,
-            messages=messages,  # type: ignore
-            **kwargs,  # type: ignore
-        )
+    merged_messages = []
+    for message in messages:
+        if merged_messages and merged_messages[-1]["role"] == message["role"]:
+            merged_messages[-1]["parts"].extend(message["parts"])
+        else:
+            merged_messages.append(message)
 
-    if hasattr(response, "error"):
-        raise RuntimeError(
-            f"OpenAI API returned an error: {str(response.error)}"
-        )
+    response = client.generate_content(
+        merged_messages,
+        generation_config=kwargs,
+    )
 
-    return response.choices[0].message.content
-
+    return response.text
 
 ACTIVITY_CALENDAR = [
     {
@@ -636,8 +554,7 @@ def call_weather_api_mocked(date: str, city: str) -> dict[str, str | int]:
 
 
 def narrate_my_trip(vacation_info, itinerary, client, model, filename="/tmp/my_trip_narration.mp3"):
-    from IPython.display import Audio, Markdown, display
-    from openai import OpenAI
+    from IPython.display import Markdown, display
 
     resp = do_chat_completion(
         messages=[
@@ -663,19 +580,3 @@ def narrate_my_trip(vacation_info, itinerary, client, model, filename="/tmp/my_t
         model=model,
     )
     display(Markdown(resp))
-
-    try:
-        if resp:
-            with client.audio.speech.with_streaming_response.create(
-                model="gpt-4o-mini-tts",
-                voice="coral",
-                input=resp,
-                instructions="Speak in a cheerful and positive tone.",
-            ) as response:
-                response.stream_to_file(filename)
-
-            display(Audio(filename))
-        else:
-            print("No response from the chat completion API.")
-    except Exception:
-        pass
