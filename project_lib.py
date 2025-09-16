@@ -235,7 +235,14 @@ def do_chat_completion(messages: list[dict[str, str]], model=None, client=None, 
         raise RuntimeError(
             f"OpenAI API returned an error: {str(response.error)}"
         )
-    print(response)
+    
+    if isinstance(response, str):
+        raise RuntimeError(f"OpenAI API returned an error: {response}")
+
+    if hasattr(response, "error"):
+        raise RuntimeError(
+            f"OpenAI API returned an error: {str(response.error)}"
+        )
     return response.choices[0].message.content
 
 
